@@ -22,6 +22,36 @@ T *aligned_alloc(std::size_t num)
 	return reinterpret_cast<T *>(ptr);
 }
 
+int next_largets_factor_2(int n){
+	int factor_2 = 1;  
+	while (factor_2 < n){
+		factor_2 *= 2;
+	}
+	return factor_2;
+}
+
+
+double check_tridiag_solution(double* a_tri, double* b_tri, double* c_tri, double* d_tri, double* solution, int N, int verbose){
+	double rhs_calculated;
+	double error;
+
+	rhs_calculated = b_tri[0] * solution[0] + c_tri[0] * solution[1];
+	error += abs(rhs_calculated - d_tri[0]);
+	if(verbose){std::cout << "calculated rhs: " << rhs_calculated << " reference rhs: " << d_tri[0] << " Accumulated error: " << error << std::endl;}
+
+	for (int i=1; i<(N-1); i++){ //we neglect special cases
+		rhs_calculated = a_tri[i] * solution[i-1] + b_tri[i] * solution[i] + c_tri[i] * solution[i+1];
+		error += abs(rhs_calculated - d_tri[i]);
+		if (verbose){std::cout << "calculated rhs: " << rhs_calculated << " reference rhs: " << d_tri[i] << " Accumulated error: " << error <<std::endl;}
+	}
+
+	rhs_calculated = a_tri[N-1] * solution[N-2] + b_tri[N-1] * solution[N-1];
+	error += abs( rhs_calculated - d_tri[N-1]);
+	if (verbose){std::cout << "calculated rhs: " << rhs_calculated << " reference rhs: " << d_tri[N-1] << " Accumulated error: " << error <<std::endl;}
+
+	return error;
+}
+
 void run_gtsv(std::string kernel_name, int kernel_size, std::vector<double *> &inputs, std::vector<cl::Device> &devices, cl::Context &context, cl::Program::Binaries &bins, cl::CommandQueue &q)
 {
         // this is a helper function to execute a kernel.
@@ -100,7 +130,10 @@ int main(){
 	cl::Program::Binaries bins = xcl::import_binary_file(xclbin_path);
 	devices.resize(1);
 
-	int N = 3136;
+	int N = 4096;
+	//N = next_largets_factor_2(N); // we try to pad to a factor of two in the hopes that this is what causes errors!
+	std::cout << N << std::endl;
+
 	double* a_tri = aligned_alloc<double>(N);
 	double* b_tri = aligned_alloc<double>(N);
 	double* c_tri = aligned_alloc<double>(N);
@@ -115,8 +148,9 @@ int main(){
 	std::default_random_engine re(4); //fixed seed
 
 	int mode = 0;
-	int noise = 0;
+	int verbose = 0;
 
+	//random random data into tris and rhs. Save a copy of rhs, this will be overwritten in-place!
 	if (mode == 0) {
 		for (int i=0; i<N; i++){
 			a_tri[i] = unif(re);
@@ -146,30 +180,18 @@ int main(){
 	std::vector<double*> inputs, outputs;
 
 	inputs = {a_tri, b_tri, c_tri, d_tri};
-	run_gtsv("gtsv", N, inputs, devices, context, bins, q); //this outputs ans into d_tri (xilinx solver kernel choice, not mine)
+	run_gtsv("gtsv", N, inputs, devices, context, bins, q); //this outputs solution into d_tri 
 	
-	double rhs_calc;
+	double xilinx_error;
 
-	rhs_calc = b_tri[0] * d_tri[0] + c_tri[0] * d_tri[1];
-	err += abs( rhs_calc - rhs_copy[0]);
-	if(noise){std::cout << "xf::solver: calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[0] << " Accumulated error: " << err << std::endl;}
-
-	for (int i=1; i<(N-1); i++){ //we neglect special cases
-		rhs_calc = a_tri[i] * d_tri[i-1] + b_tri[i] * d_tri[i] + c_tri[i] * d_tri[i+1];
-		err += abs(rhs_calc - rhs_copy[i]);
-		if (noise){std::cout << "xf::solver: calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[i] << " Accumulated error: " << err <<std::endl;}
-	}
-
-	rhs_calc = a_tri[N-1] * d_tri[N-2] + b_tri[N-1] * d_tri[N-1];
-	err += abs( rhs_calc - rhs_copy[N-1]);
-	if (noise){std::cout << "xf::solver calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[N-1] << " Accumulated error: " << err <<std::endl;}
-	std::cout << "Total error on solution /w xf::solver: " << err << std::endl; 
+	xilinx_error = check_tridiag_solution(a_tri, b_tri, c_tri, rhs_copy, d_tri, N, 0);
 
 	double sum_solution = 0;
 	for (int i=0; i<N; i++){
 		sum_solution += d_tri[i];
 	}
-	std::cout << "sum of solution /w xf::solver: " << sum_solution << std::endl;
+	std::cout << "accumulated error of solution /w xf::solver " << xilinx_error << std::endl;
+ 	std::cout << "sum of solution /w xf::solver: " << sum_solution << std::endl;
 
 	//Now for lapack test:
 	std::default_random_engine reMix(4); //fixed seed
@@ -213,30 +235,18 @@ int main(){
 	int NHRS = 1;
 	int LDB = N; 
 
-	err = 0.0;
-
 	dgtsv_(&N, &NHRS, &a_tri[1], b_tri, c_tri, d_tri, &LDB, &info); //call lapack
 
-	rhs_calc = b_tri_copy[0] * d_tri[0] + c_tri_copy[0] * d_tri[1];
-	err += abs( rhs_calc - rhs_copy[0]);
+	double lapack_error;
 
-	if (noise){std::cout << "lapack: calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[0] << " Accumulated error: " << err << std::endl;}
-
-	for (int i=1; i<(N-1); i++){ //we neglect special cases
-		rhs_calc = a_tri_copy[i] * d_tri[i-1] + b_tri_copy[i] * d_tri[i] + c_tri_copy[i] * d_tri[i+1];
-		err += abs(rhs_calc - rhs_copy[i]);
-		if (noise){std::cout << "lapack: calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[i] << " Accumulated error: " << err <<std::endl;}
-	}
-
-	rhs_calc = a_tri_copy[N-1] * d_tri[N-2] + b_tri_copy[N-1] * d_tri[N-1];
-	err += abs( rhs_calc - rhs_copy[N-1]);
-	if (noise){std::cout << "lapack: calculated rhs: " << rhs_calc << " input rhs: " << rhs_copy[N-1] << " Accumulated error: " << err <<std::endl;}
-	std::cout << "Total error on solution /w lapack: " << err << std::endl; 
+	lapack_error = check_tridiag_solution(a_tri_copy, b_tri_copy, c_tri_copy, rhs_copy, d_tri, N, 0);
 
 	sum_solution = 0;
 	for (int i=0; i<N; i++){
 		sum_solution += d_tri[i];
 	}
+
+	std::cout << "accumulated error of solution /w lapack " << lapack_error << std::endl;
 	std::cout << "sum of solution /w lapack: " << sum_solution << std::endl;
  
 	return 0;

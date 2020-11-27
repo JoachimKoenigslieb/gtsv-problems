@@ -16,7 +16,7 @@
 
 #include "xf_solver_L2.hpp"
 
-#define NRC 3136
+#define NRC 4096
 #define NCU 1
 
 extern "C" void gtsv(int n, double* matDiagLow, double* matDiag, double* matDiagUp, double* rhs) {
